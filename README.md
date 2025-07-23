@@ -74,6 +74,9 @@
 脚本会持续追踪验证损失。只有当当前epoch的验证损失低于之前所有epoch的最低值时，才会将当前的模型权重保存下来。
 
 
+*其中config.py和swin_transformer_unet_skip_expand_decoder_sys.py是模型的结构和配置代码（做了很小的修改，用于适配数据传入）
+
+
 
 
 
