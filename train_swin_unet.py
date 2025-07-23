@@ -1,11 +1,3 @@
-#'/home/xly/xly/xly/cmemsData/September.nc'
-#'/home/xly/xly/xly/jaxaData'
-#'/home/xly/xly/xly/background'
-
-# ====================================================
-# train_swin_unet.py - 最终生产版 (包含所有修正)
-# ====================================================
-
 # 1. 导入库
 import torch
 import torch.nn as nn
@@ -73,29 +65,21 @@ class SwinUnetForecastDataset(Dataset):
     def __len__(self):
         return len(self.valid_start_indices)
 
-    
+
+#注意这里swinUnet的尺寸要求是固定的。除非去修改模型结构细节
+#采取补白或者放缩操作，但补白会导致输出图像有效部分比例不协调
     def _pad_tensor(self, tensor):
         _, h, w = tensor.shape
-
-        # For a Swin Transformer with patch_size=4, window_size=7, and 4 layers (like yours),
-        # the image dimensions must be a multiple of 224.
+        
         required_multiple = 224 
 
         pad_h = (required_multiple - h % required_multiple) % required_multiple
         pad_w = (required_multiple - w % required_multiple) % required_multiple
 
-        # (pad_left, pad_right, pad_top, pad_bottom)
         padding = (0, pad_w, 0, pad_h)
-        # Use "constant" padding to fill with zeros
+        
         return F.pad(tensor, padding, "constant", 0)
-
-       # _, h, w = tensor.shape
-        #pad_h = (self.window_size - h % self.window_size) % self.window_size
-        #pad_w = (self.window_size - w % self.window_size) % self.window_size
-        #pad_h = 0
-        #pad_w = 0
-        #padding = (0, pad_w, 0, pad_h)
-        #return F.pad(tensor, padding, "constant", 0)
+        
 
     def _process_one_day_input(self, date_str):
         with xr.open_dataset(self.jaxa_map[date_str], engine='h5netcdf') as ds_jaxa:
@@ -132,10 +116,10 @@ class SwinUnetForecastDataset(Dataset):
         return input_X, label_Y
 
 # ----------------------------------------------------
-# 3. 主执行部分 (最终版)
+# 3. 主执行部分
 # ----------------------------------------------------
 if __name__ == '__main__':
-    # a. 创建一个功能完备的参数解析器
+    # a. 参数解析
     parser = argparse.ArgumentParser()
     parser.add_argument('--cfg', type=str, default='configs/swin_tiny_patch4_window7_224_lite.yaml', help='path to config file')
     parser.add_argument('--opts', help="Modify config options by adding 'KEY VALUE' pairs.", default=None, nargs='+')
@@ -152,7 +136,7 @@ if __name__ == '__main__':
     args, unparsed = parser.parse_known_args()
     config = get_config(args)
     
-    # b. 设置我们自己的路径和超参数
+    # b. 路径和超参数
     CMEMS_FILE_PATH = '/home/xly/xly/xly/cmemsData/September.nc'
     JAXA_DATA_DIR = '/home/xly/xly/xly/jaxaData'
     UNET_BG_FIELD_DIR = '/home/xly/xly/xly/background'
