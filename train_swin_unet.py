@@ -1,4 +1,3 @@
-# 1. 导入库
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -24,14 +23,13 @@ print("--- Swin-Unet训练脚本启动 (最终版) ---")
 # ----------------------------------------------------
 class SwinUnetForecastDataset(Dataset):
     def __init__(self, cmems_file_path, jaxa_dir, unet_bg_field_dir, 
-                 lon_range, lat_range, history_len=5, forecast_len=3, window_size=7):
+                 lon_range, lat_range, history_len=5, forecast_len=3, **kwargs):
         super().__init__()
         self.lon_range = lon_range
         self.lat_range = lat_range
         self.history_len = history_len
         self.forecast_len = forecast_len
         self.sequence_len = history_len + forecast_len
-        self.window_size = window_size
 
         print("--- SwinUnet Dataset 初始化 ---")
         self.ds_cmems_full = xr.open_dataset(cmems_file_path, engine='h5netcdf')
@@ -119,97 +117,133 @@ class SwinUnetForecastDataset(Dataset):
 # 3. 主执行部分
 # ----------------------------------------------------
 if __name__ == '__main__':
-    # a. 参数解析
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='configs/swin_tiny_patch4_window7_224_lite.yaml', help='path to config file')
-    parser.add_argument('--opts', help="Modify config options by adding 'KEY VALUE' pairs.", default=None, nargs='+')
-    parser.add_argument('--zip', action='store_true')
-    parser.add_argument('--cache-mode', type=str, default='part')
-    parser.add_argument('--resume', default=None)
-    parser.add_argument('--accumulation-steps', type=int, default=0)
-    parser.add_argument('--use-checkpoint', action='store_true')
-    parser.add_argument('--amp-opt-level', type=str, default='O0')
-    parser.add_argument('--tag', default='test')
-    parser.add_argument('--eval', action='store_true')
-    parser.add_argument('--throughput', action='store_true')
-    parser.add_argument('--batch-size', type=int, help='batch size for training')
-    args, unparsed = parser.parse_known_args()
-    config = get_config(args)
+    # a. 配置服务器路径和核心参数
+    #具体文件路径自己设置
+    CMEMS_DATA_DIR = 
+    JAXA_DATA_DIR = 
+    UNET_BG_FIELD_DIR = 
+    #第一个数据是CMEMS数据(完整无缺失数据集)
+    #第二个数据是jaxa卫星数据
+    #第三个是生成的背景场数据
     
-    # b. 路径和超参数
-    CMEMS_FILE_PATH = '/home/xly/xly/xly/cmemsData/September.nc'
-    JAXA_DATA_DIR = '/home/xly/xly/xly/jaxaData'
-    UNET_BG_FIELD_DIR = '/home/xly/xly/xly/background'
+    # 训练超参数
+    NUM_EPOCHS = 200      
+    BATCH_SIZE = 8        
+    ACCUMULATION_STEPS = 8 
+    LEARNING_RATE = 1e-6  
     
-    NUM_EPOCHS = 50
-    BATCH_SIZE = args.batch_size if args.batch_size else config.DATA.BATCH_SIZE
-    LEARNING_RATE = 1e-4
+    # 数据参数
     HISTORY_LEN = 5
     FORECAST_LEN = 3
-
+    LON_RANGE = [111, 116] 
+    LAT_RANGE = [20, 23]
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"将使用设备: {device}")
+    
+    # b. 参数解析器
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cfg', type=str, default='configs/swin_tiny_patch_window7_224_lite.yaml', help='path to config file')
+    parser.add_argument('--opts', help="Modify config options.", default=None, nargs='+')
+    args, _ = parser.parse_known_args()
+    config = get_config(args)
 
-    # c. 准备数据
+    # c. 划分并准备数据
     print("\n正在准备Swin-Unet的训练数据...")
-    dataset = SwinUnetForecastDataset(
-        cmems_file_path=CMEMS_FILE_PATH, jaxa_dir=JAXA_DATA_DIR,
-        unet_bg_field_dir=UNET_BG_FIELD_DIR, lon_range=[110, 120],
-        lat_range=[18, 23], history_len=HISTORY_LEN, forecast_len=FORECAST_LEN,
-        window_size=config.MODEL.SWIN.WINDOW_SIZE
+    all_cmems_files = sorted(glob.glob(os.path.join(CMEMS_DATA_DIR, '*.nc')))
+    if len(all_cmems_files) < 2:
+        raise ValueError("数据文件不足，至少需要2个文件才能划分训练集和验证集。")
+    
+    train_files = all_cmems_files[:-1]
+    val_files = all_cmems_files[-1:]
+    
+    print(f"    - {len(train_files)} 个文件用于训练: {[os.path.basename(f) for f in train_files]}")
+    print(f"    - {len(val_files)} 个文件用于验证: {[os.path.basename(f) for f in val_files]}")
+
+    print("\n创建训练数据集...")
+    train_dataset = SwinUnetForecastDataset(
+        cmems_file_paths=train_files, jaxa_dir=JAXA_DATA_DIR, unet_bg_field_dir=UNET_BG_FIELD_DIR,
+        lon_range=LON_RANGE, lat_range=LAT_RANGE, history_len=HISTORY_LEN, forecast_len=FORECAST_LEN
     )
-    if len(dataset) > 0:
-        train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
-        print("数据准备完毕。")
+    print("\n创建验证数据集...")
+    val_dataset = SwinUnetForecastDataset(
+        cmems_file_paths=val_files, jaxa_dir=JAXA_DATA_DIR, unet_bg_field_dir=UNET_BG_FIELD_DIR,
+        lon_range=LON_RANGE, lat_range=LAT_RANGE, history_len=HISTORY_LEN, forecast_len=FORECAST_LEN
+    )
+    
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=0)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    print("数据准备完毕。")
 
-        # d. 准备Swin-Unet模型
-        print("\n正在准备Swin-Unet模型...")
-        # 提前计算补白后的尺寸
-        sample_input, _ = dataset[0]
-        # 输入张量的形状是 (C, H, W)，所以高度是索引1，宽度是索引2
-        h_padded, w_padded = sample_input.shape[1], sample_input.shape[2]
-        print(f"补白后的数据尺寸: ({h_padded}, {w_padded})，将用于模型初始化。")
+    # d. 准备Swin-Unet模型
+    print("\n正在准备Swin-Unet模型...")
+    config.defrost()
+    config.MODEL.SWIN.IN_CHANS = HISTORY_LEN * 2
+    config.DATA.IMG_SIZE = (224, 224) 
+    config.freeze()
+    
+    model = SwinUnet(config, num_classes=FORECAST_LEN).to(device)
+    loss_function = nn.MSELoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
+    scaler = GradScaler()
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=10, verbose=True)
+    print("模型、损失函数、优化器和调度器定义成功。")
+
+    # e. 开始训练循环 (包含验证和模型权重保存)
+    print("\n--- 开始训练Swin-Unet---")
+    start_time = time.time()
+    best_val_loss = float('inf')
+
+    for epoch in range(NUM_EPOCHS):
+        model.train()
+        train_loss = 0.0
+        train_progress_bar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}] Training", leave=False)
         
-        config.defrost()
-        config.MODEL.SWIN.IN_CHANS = HISTORY_LEN * 2
-        config.DATA.IMG_SIZE = (h_padded, w_padded)
-        config.freeze()
-        
-        num_classes = FORECAST_LEN
-        model = SwinUnet(config, num_classes=num_classes).to(device)
-        print("Swin-Unet模型创建成功。")
-
-        loss_function = nn.MSELoss()
-        optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-        print("损失函数和优化器定义成功。")
-
-        # e. 开始训练循环
-        print("\n--- 开始训练Swin-Unet ---")
-        start_time = time.time()
-        for epoch in range(NUM_EPOCHS):
-            epoch_loss = 0.0
-            model.train()
-            progress_bar = tqdm(train_loader, desc=f"Epoch [{epoch+1}/{NUM_EPOCHS}]", leave=True)
-            for inputs, labels in progress_bar:
-                inputs, labels = inputs.to(device), labels.to(device)
-                optimizer.zero_grad()
+        optimizer.zero_grad()
+        for i, (inputs, labels) in enumerate(train_progress_bar):
+            inputs, labels = inputs.to(device), labels.to(device)
+            with autocast():
                 predictions = model(inputs)
                 loss = loss_function(predictions, labels)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-                progress_bar.set_postfix(loss=f"{loss.item():.6f}")
-            
-            avg_epoch_loss = epoch_loss / len(train_loader) if len(train_loader) > 0 else 0
-            tqdm.write(f"    - Epoch [{epoch+1}/{NUM_EPOCHS}] 结束, 平均损失 (Loss): {avg_epoch_loss:.6f}")
+                loss = loss / ACCUMULATION_STEPS
+            scaler.scale(loss).backward()
+            if (i + 1) % ACCUMULATION_STEPS == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad()
+            train_loss += loss.item() * ACCUMULATION_STEPS
+            train_progress_bar.set_postfix(train_loss=f"{loss.item() * ACCUMULATION_STEPS:.6f}")
         
-        end_time = time.time()
-        print("\n--- 训练完成 ---")
-        print(f"    - 总耗时: {((end_time - start_time) / 60):.2f} 分钟")
+        avg_train_loss = train_loss / len(train_loader) if len(train_loader) > 0 else 0
 
-        print("\n正在保存Swin-Unet模型权重...")
-        model_save_path = 'swin_unet_model_weights.pth' 
-        torch.save(model.state_dict(), model_save_path)
-        print(f"模型已成功保存至: {model_save_path}")
-    else:
-        print("\n数据加载失败，训练未开始。")
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for inputs, labels in val_loader:
+                inputs, labels = inputs.to(device), labels.to(device)
+                with autocast():
+                    predictions = model(inputs)
+                    loss = loss_function(predictions, labels)
+                val_loss += loss.item()
+        
+        avg_val_loss = val_loss / len(val_loader) if len(val_loader) > 0 else 0
+        
+        tqdm.write(f"    - Epoch [{epoch+1}/{NUM_EPOCHS}] | 训练Loss: {avg_train_loss:.6f} | 验证Loss: {avg_val_loss:.6f}")
+
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            model_save_path = f'best_model_epoch_{epoch+1}_valloss_{avg_val_loss:.4f}_{timestamp}.pth'
+            torch.save(model.state_dict(), model_save_path)
+            tqdm.write(f"    -> 验证Loss，模型已保存至: {model_save_path}")
+            
+        scheduler.step(avg_val_loss)
+
+    end_time = time.time()
+    print("\n--- 训练完成 ---")
+    print(f"    - 总耗时: {((end_time - start_time) / 60):.2f} 分钟")
+
+
+
